@@ -1,0 +1,418 @@
+diff --git a/template/funcs.go b/template/funcs.go
+index f354b0d..428c26c 100644
+--- a/template/funcs.go
++++ b/template/funcs.go
+@@ -539,6 +539,108 @@ func byTag(in interface{}) (map[string][]interface{}, error) {
+ 	return m, nil
+ }
+ 
++// withTag is a template func that takes services and filter them
++// by tag.
++//
++// {{ $s := service "service-name" | withTag "tagone" | withTag "tagtwo" }}
++//
++func withTag(tag string, in interface{}) ([]interface{}, error) {
++	var (
++		m   []interface{}
++		err error
++	)
++
++	switch typed := in.(type) {
++	case nil:
++	case []*dep.CatalogSnippet:
++		for _, snippet := range typed {
++			if isTagExists(snippet.Tags, tag) {
++				m = append(m, snippet)
++			}
++		}
++
++	case []*dep.CatalogService:
++		for _, service := range typed {
++			if isTagExists(service.ServiceTags, tag) {
++				m = append(m, service)
++			}
++		}
++
++	case []*dep.HealthService:
++		for _, service := range typed {
++			if isTagExists(service.Tags, tag) {
++				m = append(m, service)
++			}
++		}
++
++	case []interface{}:
++		m, err = filterServicesByTag(
++			typed,
++			tag,
++		)
++
++		if err != nil {
++			return nil, fmt.Errorf(
++				"withTag: can't filter services by tag %s, reason: %s",
++				tag,
++				err.Error(),
++			)
++		}
++
++	default:
++		return nil, fmt.Errorf(
++			"withTag: wrong argument type %T",
++			in,
++		)
++	}
++
++	return m, nil
++}
++
++// withTags is a template func that takes services and filter them
++// by tags.
++//
++// {{ $s := service "service-name" | withTags $requiredTags }}
++//
++func withTags(tags []string, in interface{}) ([]interface{}, error) {
++	var (
++		m []interface{}
++	)
++
++	switch typed := in.(type) {
++
++	case nil:
++	case []*dep.CatalogSnippet:
++		for _, snippet := range typed {
++			if isTagsExists(snippet.Tags, tags) {
++				m = append(m, snippet)
++			}
++		}
++
++	case []*dep.CatalogService:
++		for _, service := range typed {
++			if isTagsExists(service.ServiceTags, tags) {
++				m = append(m, service)
++			}
++		}
++
++	case []*dep.HealthService:
++		for _, service := range typed {
++			if isTagsExists(service.Tags, tags) {
++				m = append(m, service)
++			}
++		}
++
++	default:
++		return nil, fmt.Errorf(
++			"withTags: wrong argument type %T",
++			in,
++		)
++	}
++
++	return m, nil
++}
++
+ // contains is a function that have reverse arguments of "in" and is designed to
+ // be used as a pipe instead of a function:
+ //
+diff --git a/template/template.go b/template/template.go
+index 88150d4..c2db2bf 100644
+--- a/template/template.go
++++ b/template/template.go
+@@ -224,6 +224,8 @@ func funcMap(i *funcMapInput) template.FuncMap {
+ 		"base64URLEncode": base64URLEncode,
+ 		"byKey":           byKey,
+ 		"byTag":           byTag,
++		"withTag":         withTag,
++		"withTags":        withTags,
+ 		"contains":        contains,
+ 		"containsAll":     containsSomeFunc(true, true),
+ 		"containsAny":     containsSomeFunc(false, false),
+diff --git a/template/template_test.go b/template/template_test.go
+index 3659ddc..2ceede4 100644
+--- a/template/template_test.go
++++ b/template/template_test.go
+@@ -820,6 +820,70 @@ func TestTemplate_Execute(t *testing.T) {
+ 			"prod:1.2.3.4staging:1.2.3.45.6.7.8",
+ 			false,
+ 		},
++		{
++			"helper_with_tag",
++			&NewTemplateInput{
++				Contents: `{{ range $services := service "webapp" | withTag "prod" | withTag "staging" }}{{ $services.Address }}{{ end }}:{{ range $services := service "webapp" | withTag "test" }}{{ $services.Address }}{{ end }}`,
++			},
++			&ExecuteInput{
++				Brain: func() *Brain {
++					b := NewBrain()
++					d, err := dep.NewHealthServiceQuery("webapp")
++					if err != nil {
++						t.Fatal(err)
++					}
++					b.Remember(d, []*dep.HealthService{
++						&dep.HealthService{
++							Address: "1.2.3.4",
++							Tags:    []string{"prod", "staging"},
++						},
++						&dep.HealthService{
++							Address: "5.6.7.8",
++							Tags:    []string{"staging"},
++						},
++						&dep.HealthService{
++							Address: "55.66.77.88",
++							Tags:    []string{"test"},
++						},
++					})
++					return b
++				}(),
++			},
++			"1.2.3.4:55.66.77.88",
++			false,
++		},
++		{
++			"helper_with_tags",
++			&NewTemplateInput{
++				Contents: `{{ $tags := "prod staging testing" | split " "}}{{ range $services := service "webapp" | withTags $tags }}{{ $services.Address }}{{ end }}`,
++			},
++			&ExecuteInput{
++				Brain: func() *Brain {
++					b := NewBrain()
++					d, err := dep.NewHealthServiceQuery("webapp")
++					if err != nil {
++						t.Fatal(err)
++					}
++					b.Remember(d, []*dep.HealthService{
++						&dep.HealthService{
++							Address: "1.2.3.4",
++							Tags:    []string{"prod", "staging", "testing"},
++						},
++						&dep.HealthService{
++							Address: "5.6.7.8",
++							Tags:    []string{"staging"},
++						},
++						&dep.HealthService{
++							Address: "55.66.77.88",
++							Tags:    []string{"testing"},
++						},
++					})
++					return b
++				}(),
++			},
++			"1.2.3.4",
++			false,
++		},
+ 		{
+ 			"helper_contains",
+ 			&NewTemplateInput{
+diff --git a/template/utils.go b/template/utils.go
+new file mode 100644
+index 0000000..d9ba7e0
+--- /dev/null
++++ b/template/utils.go
+@@ -0,0 +1,69 @@
++package template
++
++import (
++	"fmt"
++
++	dep "github.com/hashicorp/consul-template/dependency"
++)
++
++func isTagExists(
++	serviceTags dep.ServiceTags,
++	filterTag string,
++) bool {
++	for _, serviceTag := range serviceTags {
++		if filterTag == serviceTag {
++			return true
++		}
++	}
++
++	return false
++}
++
++func isTagsExists(
++	serviceTags dep.ServiceTags,
++	requiredTags []string,
++) bool {
++	for _, requiredTag := range requiredTags {
++		if !isTagExists(serviceTags, requiredTag) {
++			return false
++		}
++	}
++
++	return true
++}
++
++func filterServicesByTag(
++	services []interface{},
++	tag string,
++) ([]interface{}, error) {
++	var m []interface{}
++
++	for _, service := range services {
++		switch s := service.(type) {
++		case nil:
++		case *dep.CatalogSnippet:
++			if isTagExists(s.Tags, tag) {
++				m = append(m, s)
++			}
++
++		case *dep.CatalogService:
++			if isTagExists(s.ServiceTags, tag) {
++				m = append(m, s)
++			}
++
++		case *dep.HealthService:
++			if isTagExists(s.Tags, tag) {
++				m = append(m, s)
++			}
++
++		default:
++			return nil, fmt.Errorf(
++				"withTag: wrong argument type %T",
++				service,
++			)
++
++		}
++	}
++
++	return m, nil
++}
+diff --git a/template/utils_test.go b/template/utils_test.go
+new file mode 100644
+index 0000000..579d253
+--- /dev/null
++++ b/template/utils_test.go
+@@ -0,0 +1,136 @@
++package template
++
++import (
++	"testing"
++
++	dep "github.com/hashicorp/consul-template/dependency"
++)
++
++func TestIsTagExists(t *testing.T) {
++	availableTags := dep.ServiceTags{"tagone", "tagtwo", "tagthree"}
++	requiredTag := "required"
++
++	if isTagExists(availableTags, requiredTag) {
++		t.Errorf(
++			"required tag `%s` exists in %s",
++			requiredTag,
++			availableTags,
++		)
++	}
++
++	availableTags = dep.ServiceTags{"required", "tagone", "tagtwo"}
++	if !isTagExists(availableTags, requiredTag) {
++		t.Errorf(
++			"required tag `%s` not exists in %v",
++			requiredTag,
++			availableTags,
++		)
++	}
++}
++
++func TestIsTagsExists(t *testing.T) {
++	availableTags := dep.ServiceTags{"tagone", "tagtwo", "tagthree"}
++	requiredTags := []string{"required", "uniquetag"}
++
++	if isTagsExists(availableTags, requiredTags) {
++		t.Errorf(
++			"required tags `%v` exists in `%v`",
++			requiredTags,
++			availableTags,
++		)
++	}
++
++	availableTags = dep.ServiceTags{"required", "uniquetag", "tagtwo"}
++	if !isTagsExists(availableTags, requiredTags) {
++		t.Errorf(
++			"required tags`%s` not exists in %v",
++			requiredTags,
++			availableTags,
++		)
++	}
++}
++
++func TestFilterServicesByTag(t *testing.T) {
++	services := []interface{}{
++		&dep.HealthService{
++			Node:    "one",
++			Address: "1.1.1.1",
++			Tags:    dep.ServiceTags{"one", "two"},
++		},
++		&dep.HealthService{
++			Node:    "two",
++			Address: "2.2.2.2",
++			Tags:    dep.ServiceTags{"three", "four"},
++		},
++		&dep.HealthService{
++			Node:    "three",
++			Address: "3.3.3.3",
++			Tags:    dep.ServiceTags{"five", "six", "one"},
++		},
++		&dep.CatalogService{
++			Node:        "four",
++			Address:     "4.4.4.4",
++			ServiceTags: dep.ServiceTags{"seven", "eight", "six"},
++		},
++		&dep.CatalogService{
++			Node:        "five",
++			Address:     "5.5.5.5",
++			ServiceTags: dep.ServiceTags{"nine", "ten"},
++		},
++		&dep.CatalogSnippet{
++			Name: "six",
++			Tags: dep.ServiceTags{"eleven", "twelve", "six", "one"},
++		},
++	}
++
++	requiredTag := "six"
++	successServiceCount := 3
++
++	filteredServices, err := filterServicesByTag(services, requiredTag)
++	if err != nil {
++		t.Errorf(
++			"got error %s", err.Error(),
++		)
++	}
++
++	if len(filteredServices) != successServiceCount {
++		t.Errorf(
++			"unexpected count of filtered services, got %d, expected %d",
++			len(filteredServices),
++			successServiceCount,
++		)
++	}
++
++	for _, service := range filteredServices {
++		switch s := service.(type) {
++		case *dep.CatalogService:
++			if s.Address != "4.4.4.4" && s.Node != "four" {
++				t.Errorf(
++					"wrong filtered catalog service, got: node %s and "+
++						"address %s expected: node `four` and "+
++						"address `4.4.4.4`",
++					s.Node, s.Address,
++				)
++			}
++		case *dep.HealthService:
++			if s.Address != "3.3.3.3" && s.Node != "three" {
++				t.Errorf(
++					"wrong filtered health service, got: node %s and "+
++						"address %s expected: node `three` and "+
++						"address `3.3.3.3`",
++					s.Node, s.Address,
++				)
++			}
++		case *dep.CatalogSnippet:
++			if s.Name != "six" {
++				t.Errorf(
++					"wrong filtered catalog snippet, got: name %s "+
++						"expected: name `six`",
++					s.Name,
++				)
++			}
++		default:
++			t.Errorf("unexpected service type %T", s)
++		}
++	}
++}

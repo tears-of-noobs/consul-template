@@ -24,14 +24,12 @@ sha512sums=('SKIP'
 prepare() {
   export GOPATH="${srcdir}"
   export PATH="$PATH:$GOPATH/bin"
-  ls -la
   mkdir -p src/github.com/hashicorp/
   mv "${pkgname}" src/github.com/hashicorp/
-  ls -la
-  mv ../feature-service-by-tag.patch src/github.com/hashicorp/
 
-  ls -la
-  patch -Np0 -i src/github.com/hashicorp/feature-service-by-tag.patch
+  cp ../feature-service-by-tag.patch src/github.com/hashicorp/${pkgname}
+  cd src/github.com/hashicorp/${pkgname}
+  patch -Np1 -i feature-service-by-tag.patch
 }
 
 build() {
