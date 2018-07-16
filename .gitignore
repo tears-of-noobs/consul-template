@@ -59,3 +59,7 @@ Temporary Items
 
 tags
 consul-template
+
+*.tar.xz
+src/
+pkg/
